@@ -11,6 +11,11 @@ import { loadConfig } from "./config.js";
 
 const TELEGRAM_API = "https://api.telegram.org/bot";
 
+// A home connection drops a packet now and then. She must never be told
+// "something went wrong" because one call lost half a second.
+const TELEGRAM_ATTEMPTS = 3;
+const TELEGRAM_BACKOFF_MS = 1500;
+
 interface TelegramUpdate {
   update_id: number;
   message?: {
@@ -27,17 +32,38 @@ async function telegram(
   method: string,
   body?: Record<string, unknown>,
 ): Promise<any> {
-  const response = await fetch(`${TELEGRAM_API}${token}/${method}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body ?? {}),
-  });
-  if (!response.ok) {
-    console.error(`Telegram ${method} failed: ${response.status}`);
-    return null;
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= TELEGRAM_ATTEMPTS; attempt++) {
+    try {
+      const response = await fetch(`${TELEGRAM_API}${token}/${method}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body ?? {}),
+      });
+      if (!response.ok) {
+        // An HTTP status is an answer, not a hiccup: retrying a 401 or a 400
+        // only repeats it. Report and give up, exactly as before.
+        console.error(`Telegram ${method} failed: ${response.status}`);
+        return null;
+      }
+      const json = await response.json();
+      return json.result ?? null;
+    } catch (error) {
+      // fetch threw: DNS, TCP or TLS. That is the transient case, and the one
+      // that cost her an answer on 2026-09-30.
+      lastError = error;
+      if (attempt < TELEGRAM_ATTEMPTS) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, attempt * TELEGRAM_BACKOFF_MS),
+        );
+      }
+    }
   }
-  const json = await response.json();
-  return json.result ?? null;
+  console.error(
+    `Telegram ${method} unreachable after ${TELEGRAM_ATTEMPTS} attempts:`,
+    lastError,
+  );
+  return null;
 }
 
 async function downloadFile(token: string, fileId: string): Promise<Buffer> {
