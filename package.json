@@ -1,0 +1,20 @@
+{
+  "name": "oma",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Oma's personal assistant - Telegram front door to a Letta cloud agent",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/bridge.ts",
+    "create-agent": "tsx src/create-agent.ts",
+    "check": "tsx src/check.ts"
+  },
+  "dependencies": {
+    "@letta-ai/letta-agent-sdk": "^0.8.25"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "tsx": "^4.19.0",
+    "typescript": "^7.0.2"
+  }
+}
