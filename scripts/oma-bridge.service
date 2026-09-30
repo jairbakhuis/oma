@@ -1,0 +1,17 @@
+[Unit]
+Description=oma-bridge: Telegram front door to Oma's Letta agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Adjust WorkingDirectory to wherever this repo lives on this machine.
+WorkingDirectory=%h/oma
+ExecStart=/usr/bin/env npm start
+Restart=always
+RestartSec=10
+# The bridge holds no secrets beyond .env; keep it out of the journal noise.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
