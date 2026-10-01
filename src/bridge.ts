@@ -1,5 +1,6 @@
 import { LettaAgentClient } from "@letta-ai/letta-agent-sdk";
 import { loadConfig } from "./config.js";
+import { telegram } from "./telegram.js";
 
 /**
  * oma-bridge: Telegram long-poll -> Letta cloud agent -> Telegram reply.
@@ -8,8 +9,6 @@ import { loadConfig } from "./config.js";
  * - One turn at a time per chat; extra messages queue inside the Letta runtime.
  * - Photos she sends are forwarded to the agent as images (letters, documents).
  */
-
-const TELEGRAM_API = "https://api.telegram.org/bot";
 
 interface TelegramUpdate {
   update_id: number;
@@ -20,24 +19,6 @@ interface TelegramUpdate {
     photo?: { file_id: string }[]; // largest is last
     document?: { file_id: string; file_name?: string };
   };
-}
-
-async function telegram(
-  token: string,
-  method: string,
-  body?: Record<string, unknown>,
-): Promise<any> {
-  const response = await fetch(`${TELEGRAM_API}${token}/${method}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body ?? {}),
-  });
-  if (!response.ok) {
-    console.error(`Telegram ${method} failed: ${response.status}`);
-    return null;
-  }
-  const json = await response.json();
-  return json.result ?? null;
 }
 
 async function downloadFile(token: string, fileId: string): Promise<Buffer> {
@@ -72,6 +53,8 @@ async function handleUpdate(
   console.log(`[${new Date().toISOString()}] question received`);
 
   try {
+    // Best effort only. telegram() swallows its own failures, so a dead typing
+    // indicator can no longer reach the catch below and cost her the answer.
     await telegram(token, "sendChatAction", {
       chat_id: allowedChatId,
       action: "typing",
@@ -145,10 +128,12 @@ async function main() {
     ...(computer ? { computer } : {}),
   });
 
-  // Validate the bot token before starting the loop.
+  // Validate the bot token before starting the loop. telegram() already retried,
+  // so a null here is either a bad token or Telegram being down - say both, so
+  // nobody spends an hour hunting a token that was fine all along.
   const me = await telegram(telegramToken, "getMe");
   if (!me) {
-    console.error("Telegram bot token invalid.");
+    console.error("Telegram getMe failed: bot token invalid, or Telegram unreachable.");
     process.exit(1);
   }
   console.log(`oma-bridge started - bot is @${me.username}`);
@@ -157,18 +142,18 @@ async function main() {
 
   let offset = 0;
   for (;;) {
-    let updates: TelegramUpdate[] = [];
-    try {
-      updates = (await telegram(telegramToken, "getUpdates", {
-        offset,
-        timeout: 30,
-        allowed_updates: ["message"],
-      })) ?? [];
-    } catch {
-      // network hiccup - retry after a pause
+    // telegram() retries internally and returns null once it gives up. null is
+    // "Telegram is unreachable" and must pause; [] is "nothing new" and must not.
+    const polled = await telegram(telegramToken, "getUpdates", {
+      offset,
+      timeout: 30,
+      allowed_updates: ["message"],
+    });
+    if (polled === null) {
       await new Promise((resolve) => setTimeout(resolve, 5000));
       continue;
     }
+    const updates: TelegramUpdate[] = polled;
 
     for (const update of updates) {
       offset = update.update_id + 1;
