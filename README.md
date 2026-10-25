@@ -119,6 +119,10 @@ timeout the run is aborted, and an empty or failed answer gets a short Dutch
 apology instead of silence. The journal logs each event type, errors and the
 answer length per turn, never the content.
 
+Each Telegram message is confirmed before it is handled, so a message that
+crashes the bridge cannot come back after every restart; a crash itself is
+logged as `uncaughtException` or `unhandledRejection` with a timestamp.
+
 **No reply / `turn timeout` in the log?** Run `npm run check`. It checks, in
 order, the API key, the agent, stuck runs and open approvals, the session
 start, and one test question, and stops at the first step that fails.
