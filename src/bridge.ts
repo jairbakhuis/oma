@@ -1,6 +1,8 @@
 import { LettaAgentClient } from "@letta-ai/letta-agent-sdk";
 import { loadConfig } from "./config.js";
-import { replyFor, runTurn, splitForTelegram } from "./turn.js";
+import { fileURLToPath } from "node:url";
+import { apologiseForUnfinishedTurn, clearTurnMarker, handleBatch, startTurnMarker } from "./poll.js";
+import { REPLY_FAILED, replyFor, runTurn, splitForTelegram } from "./turn.js";
 
 /**
  * oma-bridge: Telegram long-poll -> Letta cloud agent -> Telegram reply.
@@ -9,9 +11,13 @@ import { replyFor, runTurn, splitForTelegram } from "./turn.js";
  * - One turn at a time per chat; extra messages queue inside the Letta runtime.
  * - Every turn has a hard time limit (src/turn.ts); she always gets a reply.
  * - Photos she sends are forwarded to the agent as images (letters, documents).
+ * - Each update is confirmed to Telegram before it is handled (src/poll.ts), so
+ *   a message that crashes the bridge cannot come back after every restart.
  */
 
 const TELEGRAM_API = "https://api.telegram.org/bot";
+// Next to .env (gitignored): exists only while a turn for her runs.
+const TURN_MARKER = fileURLToPath(new URL("../.oma_turn_in_progress", import.meta.url));
 
 interface TelegramUpdate {
   update_id: number;
@@ -76,6 +82,7 @@ async function handleUpdate(
   if (!text && !hasPhoto && !message.document) return;
 
   console.log(`[${new Date().toISOString()}] question received`);
+  startTurnMarker(TURN_MARKER);
 
   try {
     await telegram(token, "sendChatAction", {
@@ -124,10 +131,21 @@ async function handleUpdate(
       chat_id: allowedChatId,
       text: "Sorry, er ging iets mis. Probeer het over een paar minuten nog eens.",
     }).catch((sendError) => console.error("Could not send the error reply:", sendError));
+  } finally {
+    clearTurnMarker(TURN_MARKER);
   }
 }
 
 async function main() {
+  // A crash inside the SDK (a timer, a socket) bypasses every try/catch. Log it
+  // with a timestamp so the journal names the cause, then let systemd restart.
+  for (const kind of ["uncaughtException", "unhandledRejection"] as const) {
+    process.on(kind, (error) => {
+      console.error(`[${new Date().toISOString()}] ${kind} - the bridge restarts:`, error);
+      process.exit(1);
+    });
+  }
+
   const { lettaApiKey, agentId, telegramToken, allowedChatId, computer } =
     loadConfig();
 
@@ -147,6 +165,12 @@ async function main() {
   console.log(`Agent: ${agentId}`);
   console.log(`Only chat ${allowedChatId} is allowlisted.`);
 
+  await apologiseForUnfinishedTurn(
+    TURN_MARKER,
+    async () =>
+      (await telegram(telegramToken, "sendMessage", { chat_id: allowedChatId, text: REPLY_FAILED })) !== null,
+  );
+
   let offset = 0;
   for (;;) {
     let updates: TelegramUpdate[] = [];
@@ -162,10 +186,14 @@ async function main() {
       continue;
     }
 
-    for (const update of updates) {
-      offset = update.update_id + 1;
-      await handleUpdate(update, telegramToken, client, agentId, allowedChatId);
-    }
+    offset =
+      (await handleBatch(
+        updates,
+        async (next) => {
+          await telegram(telegramToken, "getUpdates", { offset: next, timeout: 0, limit: 1 });
+        },
+        (update) => handleUpdate(update, telegramToken, client, agentId, allowedChatId),
+      )) ?? offset;
   }
 }
 

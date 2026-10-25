@@ -1,3 +1,4 @@
 node_modules/
 .env
 *.log
+.oma_turn_in_progress
