@@ -111,7 +111,17 @@ Send a photo of a letter; the agent should read it.
 systemctl --user restart oma-bridge    # after .env changes
 journalctl --user -u oma-bridge -f     # live logs
 npm run check                          # test the agent without Telegram
+npm test                               # unit tests of the turn logic
 ```
+
+She always gets a reply: every turn has a 90 s limit (`src/turn.ts`); on a
+timeout the run is aborted, and an empty or failed answer gets a short Dutch
+apology instead of silence. The journal logs each event type, errors and the
+answer length per turn, never the content.
+
+**No reply / `turn timeout` in the log?** Run `npm run check`. It checks, in
+order, the API key, the agent, stuck runs and open approvals, the session
+start, and one test question, and stops at the first step that fails.
 
 ## Per-client reuse
 
