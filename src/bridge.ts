@@ -1,11 +1,13 @@
 import { LettaAgentClient } from "@letta-ai/letta-agent-sdk";
 import { loadConfig } from "./config.js";
+import { replyFor, runTurn, splitForTelegram } from "./turn.js";
 
 /**
  * oma-bridge: Telegram long-poll -> Letta cloud agent -> Telegram reply.
  *
  * - Only OMA_TELEGRAM_CHAT_ID may talk to the bot; everyone else is ignored.
  * - One turn at a time per chat; extra messages queue inside the Letta runtime.
+ * - Every turn has a hard time limit (src/turn.ts); she always gets a reply.
  * - Photos she sends are forwarded to the agent as images (letters, documents).
  */
 
@@ -31,6 +33,8 @@ async function telegram(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body ?? {}),
+    // getUpdates long-polls 30 s; nothing to Telegram should take longer than this.
+    signal: AbortSignal.timeout(60_000),
   });
   if (!response.ok) {
     console.error(`Telegram ${method} failed: ${response.status}`);
@@ -44,7 +48,9 @@ async function downloadFile(token: string, fileId: string): Promise<Buffer> {
   const file = await telegram(token, "getFile", { file_id: fileId });
   const path = file?.file_path;
   if (!path) throw new Error("Telegram getFile returned no file_path");
-  const response = await fetch(`https://api.telegram.org/file/bot${token}/${path}`);
+  const response = await fetch(`https://api.telegram.org/file/bot${token}/${path}`, {
+    signal: AbortSignal.timeout(60_000),
+  });
   if (!response.ok) throw new Error(`Telegram file download failed: ${response.status}`);
   return Buffer.from(await response.arrayBuffer());
 }
@@ -77,8 +83,6 @@ async function handleUpdate(
       action: "typing",
     });
 
-    await using session = client.resumeSession(agentId);
-
     // Photos: letters, bank statements, official forms. Send as image content
     // so the agent can read them.
     const content: Array<Record<string, unknown>> = [];
@@ -106,32 +110,20 @@ async function handleUpdate(
     }
     content.push({ type: "text", text: text || "Wat staat er in deze brief?" });
 
-    await session.send(content as any);
-
-    let answer = "";
-    for await (const event of session.stream()) {
-      if (event.type === "assistant") answer += event.content;
-      if (event.type === "result" && !event.success) {
-        console.error("Turn failed:", event.errorCode, event.errorDetail);
-        answer = "Sorry, er ging iets mis aan mijn kant. Probeer het nog eens.";
-      }
-    }
-
-    if (answer.trim()) {
-      // Telegram messages cap at 4096 chars; split long answers.
-      for (let i = 0; i < answer.length; i += 4000) {
-        await telegram(token, "sendMessage", {
-          chat_id: allowedChatId,
-          text: answer.slice(i, i + 4000),
-        });
-      }
+    // runTurn closes the session; no `await using`, whose dispose can hang.
+    const session = client.resumeSession(agentId);
+    const outcome = await runTurn(session, content, {
+      log: (line) => console.log(`[${new Date().toISOString()}] ${line}`),
+    });
+    for (const part of splitForTelegram(replyFor(outcome))) {
+      await telegram(token, "sendMessage", { chat_id: allowedChatId, text: part });
     }
   } catch (error) {
     console.error("Error handling update:", error);
     await telegram(token, "sendMessage", {
       chat_id: allowedChatId,
       text: "Sorry, er ging iets mis. Probeer het over een paar minuten nog eens.",
-    });
+    }).catch((sendError) => console.error("Could not send the error reply:", sendError));
   }
 }
 
