@@ -1,7 +1,7 @@
 import { LettaAgentClient } from "@letta-ai/letta-agent-sdk";
 import { loadConfig } from "./config.js";
 import { fileURLToPath } from "node:url";
-import { clearTurnMarker, handleBatch, startTurnMarker, takeUnfinishedTurn } from "./poll.js";
+import { apologiseForUnfinishedTurn, clearTurnMarker, handleBatch, startTurnMarker } from "./poll.js";
 import { REPLY_FAILED, replyFor, runTurn, splitForTelegram } from "./turn.js";
 
 /**
@@ -165,10 +165,11 @@ async function main() {
   console.log(`Agent: ${agentId}`);
   console.log(`Only chat ${allowedChatId} is allowlisted.`);
 
-  if (takeUnfinishedTurn(TURN_MARKER)) {
-    console.error("The previous run stopped mid-turn - sending her an apology.");
-    await telegram(telegramToken, "sendMessage", { chat_id: allowedChatId, text: REPLY_FAILED });
-  }
+  await apologiseForUnfinishedTurn(
+    TURN_MARKER,
+    async () =>
+      (await telegram(telegramToken, "sendMessage", { chat_id: allowedChatId, text: REPLY_FAILED })) !== null,
+  );
 
   let offset = 0;
   for (;;) {

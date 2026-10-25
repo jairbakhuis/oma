@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { clearTurnMarker, handleBatch, startTurnMarker, takeUnfinishedTurn } from "./poll.js";
+import { apologiseForUnfinishedTurn, clearTurnMarker, handleBatch, startTurnMarker } from "./poll.js";
 
 test("each update is confirmed before it is handled", async () => {
   const calls: string[] = [];
@@ -55,17 +55,41 @@ test("an empty batch keeps the offset", async () => {
   assert.equal(await handleBatch([], async () => {}, async () => {}), undefined);
 });
 
-test("a turn that never finished is reported once at the next start", () => {
-  const marker = join(mkdtempSync(join(tmpdir(), "oma-")), "turn");
-  assert.equal(takeUnfinishedTurn(marker), false);
-  startTurnMarker(marker);
-  assert.equal(takeUnfinishedTurn(marker), true);
-  assert.equal(takeUnfinishedTurn(marker), false);
+function marker(): string {
+  return join(mkdtempSync(join(tmpdir(), "oma-")), "turn");
+}
+
+test("a turn that never finished gets one apology at the next start", async () => {
+  const path = marker();
+  let sends = 0;
+  const send = async () => {
+    sends++;
+    return true;
+  };
+  await apologiseForUnfinishedTurn(path, send);
+  assert.equal(sends, 0);
+  startTurnMarker(path);
+  await apologiseForUnfinishedTurn(path, send);
+  await apologiseForUnfinishedTurn(path, send);
+  assert.equal(sends, 1);
+});
+
+test("a failed apology keeps the marker for the next start", async () => {
+  const path = marker();
+  startTurnMarker(path);
+  await apologiseForUnfinishedTurn(path, async () => false);
+  assert.equal(existsSync(path), true);
+  await apologiseForUnfinishedTurn(path, async () => {
+    throw new Error("network down");
+  });
+  assert.equal(existsSync(path), true);
+  await apologiseForUnfinishedTurn(path, async () => true);
+  assert.equal(existsSync(path), false);
 });
 
 test("a finished turn leaves no marker", () => {
-  const marker = join(mkdtempSync(join(tmpdir(), "oma-")), "turn");
-  startTurnMarker(marker);
-  clearTurnMarker(marker);
-  assert.equal(takeUnfinishedTurn(marker), false);
+  const path = marker();
+  startTurnMarker(path);
+  clearTurnMarker(path);
+  assert.equal(existsSync(path), false);
 });

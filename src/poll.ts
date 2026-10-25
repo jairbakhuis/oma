@@ -50,9 +50,23 @@ export function clearTurnMarker(path: string): void {
   }
 }
 
-/** True once if the previous run died mid-turn; clears the marker. */
-export function takeUnfinishedTurn(path: string): boolean {
-  if (!existsSync(path)) return false;
-  clearTurnMarker(path);
-  return true;
+/**
+ * At startup: if the previous run died mid-turn, send the apology. The marker
+ * stays until the send succeeds, so a network that is not up yet after a
+ * restart cannot lose it.
+ */
+export async function apologiseForUnfinishedTurn(
+  path: string,
+  send: () => Promise<boolean>,
+): Promise<void> {
+  if (!existsSync(path)) return;
+  console.error("The previous run stopped mid-turn - sending her an apology.");
+  let sent = false;
+  try {
+    sent = await send();
+  } catch (error) {
+    console.error("Sending the apology failed:", error);
+  }
+  if (sent) clearTurnMarker(path);
+  else console.error("Apology not sent - the marker stays for the next start.");
 }
